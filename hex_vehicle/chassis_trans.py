@@ -262,8 +262,9 @@ class ChassisInterface:
             with self.__lock:
                 self.__last_cmd_time = None
                 self.__api_initialized = False
+                self.__is_set_vehicle_origin_position = False  # Reset origin on reconnection
 
-            self.data_interface.logi("Vehicle stopped and control disabled, ready for reconnection")
+            self.data_interface.logi("Vehicle stopped and control disabled, odometry origin will reset on reconnection")
             # Note: Node remains running and can accept new connections
 
     def __timeout_check_callback(self):
@@ -309,8 +310,9 @@ class ChassisInterface:
             with self.__lock:
                 self.__last_cmd_time = None
                 self.__api_initialized = False
+                self.__is_set_vehicle_origin_position = False  # Reset origin on reconnection
 
-            self.data_interface.logi("Vehicle stopped and control disabled due to timeout, ready for reconnection")
+            self.data_interface.logi("Vehicle stopped and control disabled due to timeout, odometry origin will reset on reconnection")
 
     def __check_parking_stop_detail(self):
         start_time = time.perf_counter()
