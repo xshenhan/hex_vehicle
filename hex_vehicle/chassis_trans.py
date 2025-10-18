@@ -73,6 +73,7 @@ class ChassisInterface:
             self.data_interface.logi("simple mode disabled, you can only control the chassis with /joint_ctrl")
             self.data_interface.create_subscriber(JointState, "joint_ctrl", self.__joint_ctrl_callback)
         self.data_interface.create_subscriber(Bool, "clear_err", self.__clear_err_callback)
+        self.data_interface.create_subscriber(Bool, "shutdown_request", self.__shutdown_request_callback)
 
         self.__timeout_timer = self.data_interface.create_timer(0.1, self.__timeout_check_callback)
         self.__session_timer = self.data_interface.create_timer(3.0, self.__session_check_callback)
@@ -226,6 +227,45 @@ class ChassisInterface:
             bin = msg.SerializeToString()
             self.pub_ws_down(bin)
 
+    def __shutdown_request_callback(self, msg: Bool):
+        """Handle graceful shutdown request from upper layer"""
+        if msg.data:
+            self.data_interface.logi("Received shutdown request, stopping vehicle...")
+
+            # First, send zero velocity command to stop the vehicle
+            stop_cmd = public_api_down_pb2.APIDown(
+                base_command = public_api_types_pb2.BaseCommand(
+                    simple_move_command = public_api_types_pb2.SimpleBaseMoveCommand(
+                        xyz_speed = public_api_types_pb2.XyzSpeed(
+                            speed_x = 0.0,
+                            speed_y = 0.0,
+                            speed_z = 0.0
+                        )
+                    )
+                )
+            )
+            # Send stop command multiple times to ensure it's received
+            for _ in range(5):
+                self.pub_ws_down(list(stop_cmd.SerializeToString()))
+                time.sleep(0.02)  # 20ms interval
+
+            # Then send disable command to hardware
+            api_down = public_api_down_pb2.APIDown(
+                base_command = public_api_types_pb2.BaseCommand(
+                    api_control_initialize = False
+                )
+            )
+            bin = api_down.SerializeToString()
+            self.pub_ws_down(list(bin))
+
+            # Reset internal state to allow reconnection
+            with self.__lock:
+                self.__last_cmd_time = None
+                self.__api_initialized = False
+
+            self.data_interface.logi("Vehicle stopped and control disabled, ready for reconnection")
+            # Note: Node remains running and can accept new connections
+
     def __timeout_check_callback(self):
         need_disable = False
 
@@ -235,10 +275,28 @@ class ChassisInterface:
                 if elapsed > self.__timeout_threshold:
                     need_disable = True
 
-        # Send disable command and shutdown node
+        # Send disable command (but keep node running)
         if need_disable:
-            self.data_interface.loge("chassis disabled due to command timeout, please restart node !!!")
-            # Send disable command
+            self.data_interface.logw("Command timeout detected, stopping vehicle...")
+
+            # First, send zero velocity command to stop the vehicle
+            stop_cmd = public_api_down_pb2.APIDown(
+                base_command = public_api_types_pb2.BaseCommand(
+                    simple_move_command = public_api_types_pb2.SimpleBaseMoveCommand(
+                        xyz_speed = public_api_types_pb2.XyzSpeed(
+                            speed_x = 0.0,
+                            speed_y = 0.0,
+                            speed_z = 0.0
+                        )
+                    )
+                )
+            )
+            # Send stop command multiple times to ensure it's received
+            for _ in range(5):
+                self.pub_ws_down(list(stop_cmd.SerializeToString()))
+                time.sleep(0.02)  # 20ms interval
+
+            # Then send disable command
             api_down = public_api_down_pb2.APIDown(
                 base_command = public_api_types_pb2.BaseCommand(
                     api_control_initialize = False
@@ -246,9 +304,13 @@ class ChassisInterface:
             )
             bin = api_down.SerializeToString()
             self.pub_ws_down(list(bin))
-            # Shutdown node
-            self.data_interface.cancel_timer(self.__timeout_timer)
-            self.data_interface.shutdown()
+
+            # Reset state to allow reconnection
+            with self.__lock:
+                self.__last_cmd_time = None
+                self.__api_initialized = False
+
+            self.data_interface.logi("Vehicle stopped and control disabled due to timeout, ready for reconnection")
 
     def __check_parking_stop_detail(self):
         start_time = time.perf_counter()
